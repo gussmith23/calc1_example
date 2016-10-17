@@ -33,39 +33,79 @@ interface calc_ifc(input bit clk);
     
 endinterface
 
-// This program resets the device, enters the command add(1,2), and checks for a
-// correct result.
-program test(calc_ifc.TEST_PROGRAM calc_ifc1);
+// TODO: Making this randomizable should be pretty easy!
+// Represents a single request into the calculator.
+class Request;
+  logic [0:3] cmd;
+  logic [0:31] operand1, operand2;
+
+  function new(input logic [0:3] cmd, logic [0:31] operand1, operand2);
+    this.cmd = cmd;
+    this.operand1 = operand1;
+    this.operand2 = operand2;
+  endfunction
+endclass
+
+// This program generates a queue of Requests and puts them into the calculator
+// one-by-one, computing the expected output for each and checking it against
+// the actual output.
+program automatic test(calc_ifc.TEST_PROGRAM calc_ifc1);
+  Request request_queue[$];
+  Request req;
+  logic [0:31] expected_output;
 
   initial begin 
+
+    // TODO: Create a Generator class to handle command generation.
+    // Set up our task queue
+    req = new(1,1,2);
+    request_queue.push_back(req);
+    req = new(2,2,1);
+    request_queue.push_back(req);
+
+    // Reset device
     calc_ifc1.reset <= 7'b1111111;
     repeat (7) @calc_ifc1.cb;
     calc_ifc1.reset <= 0;
 
-    // Input command. Command: addition. Arguments: 1 and 2.
-    calc_ifc1.cb.req1_cmd_in <= 1;
-    calc_ifc1.cb.req1_data_in <= 1;
-    @calc_ifc1.cb;
-    calc_ifc1.cb.req1_cmd_in <= 0;
-    calc_ifc1.cb.req1_data_in <= 2;
+    while (request_queue.size() != 0) begin
+      Request req;
+      req = request_queue.pop_front();
+      
+      // Put the request on the wire.
+      @calc_ifc1.cb;
+      calc_ifc1.cb.req1_cmd_in <= req.cmd;
+      calc_ifc1.cb.req1_data_in <= req.operand1;
+      @calc_ifc1.cb;
+      calc_ifc1.cb.req1_cmd_in <= 0;
+      calc_ifc1.cb.req1_data_in <= req.operand2;
 
-    // Wait for the signal that the data line has data on it.
-    @ (calc_ifc1.cb.out_resp1);
+      // Wait for the signal that the data line has data on it.
+      @ (calc_ifc1.cb.out_resp1);
 
-    // Check that the calculator didn't return an error code.
-    assert(calc_ifc1.cb.out_resp1 == 1) begin 
-      $display("Response code is 1 - operation returned without error! Checking correctness...");
+      // Check that the calculator didn't return an error code.
+      assert(calc_ifc1.cb.out_resp1 == 1) else begin
+        $error("Response code is %b - calculator error!", calc_ifc1.cb.out_resp1);
+        continue;
+      end
+       
+      // TODO: I've only implemented two of the commands!
+      // Calculate the expected output value.
+      case(req.cmd)
+        1: expected_output = req.operand1 + req.operand2;
+        2: expected_output = req.operand1 - req.operand2;
+      endcase
+
       // Check that the calculator calculated the addition correctly.
-      assert(calc_ifc1.cb.out_data1 == 3) $display("Addition succeeded! Got 1 + 2 == 3.");
-      else $error("Addition failed! Got 1 + 2 == %d", calc_ifc1.cb.out_data1);
+      assert(calc_ifc1.cb.out_data1 == expected_output) 
+        $display("Operation succeeded! Operands: %d, %d; output: %d; command: %b.", 
+                    req.operand1, req.operand2, calc_ifc1.cb.out_data1, req.cmd);
+      else $error("Operation failed! Output: %d. Expected %d. (Operands: %d, %d; command: %b)",
+                    calc_ifc1.cb.out_data1, expected_output, req.operand1, req.operand2, req.cmd);
     end
-    else $error("Response code is %b - calculator error!", calc_ifc1.cb.out_resp1);
-
     $finish;
   end
-
 endprogram
-
 
 module testbench();
   
