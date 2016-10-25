@@ -15,7 +15,6 @@ interface calc_ifc(input bit clk);
   logic [1:7] reset;
   logic scan_in;
 
-  // Now, we're using a clocking block in our interface.
   clocking cb @(posedge clk);
     input out_data1, out_data2, out_data3, out_data4,
     out_resp1, out_resp2, out_resp3, out_resp4, 
@@ -33,11 +32,11 @@ interface calc_ifc(input bit clk);
     
 endinterface
 
-// TODO: Making this randomizable should be pretty easy!
 // Represents a single request into the calculator.
+// See below for the randomizable version!
 class Request;
   logic [0:3] cmd;
-  logic [0:31] operand1, operand2;
+  bit [0:31] operand1, operand2;
 
   function new(input logic [0:3] cmd, logic [0:31] operand1, operand2);
     this.cmd = cmd;
@@ -46,22 +45,56 @@ class Request;
   endfunction
 endclass
 
+// Randomizable request.
+// Note: In this example, this randomizable request class is heavily constrained
+// because we know exactly which bugs we're looking for.
+// In a real-world scenario, you would not constrain your class so heavily.
+class RequestRand;
+  rand bit [0:3] cmd;
+  rand bit [0:31] operand1, operand2;
+
+  constraint c {
+    
+    // Constrain to add (1), subtract (2), invalid command (3),
+    // and shift left (5)
+		cmd inside {1,2,3,5};
+    
+    // Each of the three parts of the constraint below ensures that this request
+    // will trigger a bug. 
+    
+    // BUG 1: Subtract doesn't work with this specific operand! (And possibly
+    // other operands - can you find any others?)
+		(operand1==32'b0000_1000_0000_1000_0000_0000_0000_0000 && cmd==2) 
+    // BUG 2: Shift left with operand 0 leads to error!
+    ||(operand2==0 && cmd==5) 
+    // BUG 3: Invalid commands (cmd=3, in this case) are not detected!
+    || cmd==3;
+  }
+endclass
+
 // This program generates a queue of Requests and puts them into the calculator
 // one-by-one, computing the expected output for each and checking it against
 // the actual output.
+// Note: In a real-world example of a random test, you would likely run a lot 
+// more than 10 tests. As I stated above, this example random test is heavily
+// constrained so that we're guaranteed to find one of three bugs. Thus, we 
+// don't need to run that many tests to see all three bugs!
 program automatic test(calc_ifc.TEST_PROGRAM calc_ifc1);
-  Request request_queue[$];
-  Request req;
+  RequestRand request_queue[$];
+  RequestRand req;
   logic [0:31] expected_output;
+  logic valid_cmd;
+  int number_of_tests=10;
 
   initial begin 
 
     // TODO: Create a Generator class to handle command generation.
     // Set up our task queue
-    req = new(1,1,2);
-    request_queue.push_back(req);
-    req = new(2,2,1);
-    request_queue.push_back(req);
+    for (int i=1;i<=number_of_tests;i++) begin
+    	req = new();
+    	if(!req.randomize()) $finish;
+    	request_queue.push_back(req);
+    end
 
     // Reset device
     calc_ifc1.reset <= 7'b1111111;
@@ -69,7 +102,7 @@ program automatic test(calc_ifc.TEST_PROGRAM calc_ifc1);
     calc_ifc1.reset <= 0;
 
     while (request_queue.size() != 0) begin
-      Request req;
+      RequestRand req;
       req = request_queue.pop_front();
       
       // Put the request on the wire.
@@ -84,25 +117,30 @@ program automatic test(calc_ifc.TEST_PROGRAM calc_ifc1);
 
       // Wait for the signal that the data line has data on it.
       @ (calc_ifc1.cb.out_resp1);
-
-      // Check that the calculator didn't return an error code.
-      assert(calc_ifc1.cb.out_resp1 == 1) else begin
-        $error("Response code is %b - calculator error!", calc_ifc1.cb.out_resp1);
-        continue;
-      end
+      $display("Response code is %0b - calculator responded! ", calc_ifc1.cb.out_resp1);
        
-      // TODO: I've only implemented two of the commands!
       // Calculate the expected output value.
+      // Note: Shift Right not implemented yet!
       case(req.cmd)
-        1: expected_output = req.operand1 + req.operand2;
-        2: expected_output = req.operand1 - req.operand2;
+        1: begin valid_cmd=1; expected_output = req.operand1 + req.operand2; end
+        2: begin valid_cmd=1; expected_output = req.operand1 - req.operand2; end
+        3: begin valid_cmd=0; end
+        5: begin valid_cmd=1; expected_output = req.operand1 << req.operand2; end
       endcase
 
-      // Check that the calculator calculated the addition correctly.
+      // Check that invalid commands were detected.
+      if(valid_cmd==0)
+        assert(calc_ifc1.cb.out_resp1==2) 
+        else begin
+          $error("INVALID command NOT detected! Output: %0d. (Operands: %0d, %0d; command: %0b)",
+                  calc_ifc1.cb.out_data1, req.operand1, req.operand2, req.cmd);
+          continue;
+        end
+
       assert(calc_ifc1.cb.out_data1 == expected_output) 
-        $display("Operation succeeded! Operands: %d, %d; output: %d; command: %b.", 
+        $display("Operation succeeded! Operands: %0d, %0d; output: %0d; command: %0b.", 
                     req.operand1, req.operand2, calc_ifc1.cb.out_data1, req.cmd);
-      else $error("Operation failed! Output: %d. Expected %d. (Operands: %d, %d; command: %b)",
+      else $error("Operation failed! Output: %0d. Expected %0d. (Operands: %0d, %0d; command: %0b)",
                     calc_ifc1.cb.out_data1, expected_output, req.operand1, req.operand2, req.cmd);
     end
     $finish;
