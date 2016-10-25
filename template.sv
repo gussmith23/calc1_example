@@ -79,6 +79,8 @@ program automatic test(calc_ifc.TEST_PROGRAM calc_ifc1);
       @calc_ifc1.cb;
       calc_ifc1.cb.req1_cmd_in <= 0;
       calc_ifc1.cb.req1_data_in <= req.operand2;
+      @calc_ifc1.cb;
+      calc_ifc1.cb.req1_data_in <= 0;
 
       // Wait for the signal that the data line has data on it.
       @ (calc_ifc1.cb.out_resp1);
